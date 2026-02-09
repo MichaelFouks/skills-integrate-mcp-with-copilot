@@ -8,16 +8,36 @@ for extracurricular activities at Mergington High School.
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 import os
+import json
 from pathlib import Path
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Mount the static files directory
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
+
+# In-memory session storage (simple implementation)
+authenticated_sessions = set()
+
+# Load teachers from JSON file
+def load_teachers():
+    teachers_file = Path(__file__).parent / "teachers.json"
+    with open(teachers_file, 'r') as f:
+        return json.load(f)["teachers"]
 
 # In-memory activity database
 activities = {
@@ -88,6 +108,40 @@ def get_activities():
     return activities
 
 
+@app.post("/login")
+def login(username: str, password: str):
+    """Authenticate a teacher"""
+    teachers = load_teachers()
+    
+    for teacher in teachers:
+        if teacher["username"] == username and teacher["password"] == password:
+            # Store session
+            authenticated_sessions.add(username)
+            return {
+                "success": True,
+                "message": f"Welcome, {username}!",
+                "username": username
+            }
+    
+    raise HTTPException(status_code=401, detail="Invalid username or password")
+
+
+@app.post("/logout")
+def logout(username: str):
+    """Logout a teacher"""
+    if username in authenticated_sessions:
+        authenticated_sessions.remove(username)
+    return {"success": True, "message": "Logged out successfully"}
+
+
+@app.get("/check-auth")
+def check_auth(username: str = None):
+    """Check if a user is authenticated"""
+    if username and username in authenticated_sessions:
+        return {"authenticated": True, "username": username}
+    return {"authenticated": False}
+
+
 @app.post("/activities/{activity_name}/signup")
 def signup_for_activity(activity_name: str, email: str):
     """Sign up a student for an activity"""
@@ -111,8 +165,15 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, username: str = None):
+    """Unregister a student from an activity (teachers only)"""
+    # Check if user is authenticated as a teacher
+    if not username or username not in authenticated_sessions:
+        raise HTTPException(
+            status_code=403,
+            detail="Only logged-in teachers can unregister students"
+        )
+    
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
